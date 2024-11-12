@@ -1,5 +1,8 @@
 from typing import Any, Dict, List, Optional, Type
 
+from sklearn.multioutput import MultiOutputRegressor
+from sklearn.ensemble import GradientBoostingRegressor
+import numpy as np
 import torch as th
 from gymnasium import spaces
 from torch import nn
@@ -83,6 +86,75 @@ class QNetwork(BasePolicy):
             )
         )
         return data
+
+
+class HybridQNetwork(QNetwork):
+    """
+    Hybrid Q-Network that combines a GradientBoostingRegressor and an MLP
+    """
+    def __init__(
+        self,
+        observation_space: spaces.Space,
+        action_space: spaces.Discrete,
+        features_extractor: BaseFeaturesExtractor,
+        features_dim: int,
+        net_arch: Optional[List[int]] = None,
+        activation_fn: Type[nn.Module] = nn.ReLU,
+        normalize_images: bool = True,
+        gb_depth: int = 3,
+        gb_new_estimators: int = 1,
+    ) -> None:
+        super().__init__(
+            observation_space,
+            action_space,
+            features_extractor,
+            features_dim,
+            net_arch,
+            activation_fn,
+            normalize_images,
+        )
+        
+        # Initialize single multi-output GBM
+        base_gb = GradientBoostingRegressor(max_depth=(self.action_space.n - 1 + gb_depth), n_estimators=gb_new_estimators)
+        self.new_estimators = gb_new_estimators
+        self.gb_model = MultiOutputRegressor(base_gb)
+        self.is_gb_fitted = False
+
+    def forward(self, obs: PyTorchObs) -> th.Tensor:
+        """
+        Predict Q-values as sum of GBM and MLP predictions
+        """
+        # Get MLP predictions
+        mlp_q_values = super().forward(obs)
+        
+        # If GBM not fitted yet, return only MLP predictions
+        if not self.is_gb_fitted:
+            return mlp_q_values
+            
+        # Get GBM predictions
+        if isinstance(obs, dict):
+            # Handle dict observations
+            features = th.cat([v.reshape(v.shape[0], -1) for v in obs.values()], dim=1)
+        else:
+            features = obs.reshape(obs.shape[0], -1)
+            
+        features_np = features.detach().cpu().numpy()
+        gb_pred = self.gb_model.predict(features_np)
+        gb_predictions = th.from_numpy(gb_pred).to(mlp_q_values.device)
+            
+        # Return sum of predictions
+        return mlp_q_values + gb_predictions
+
+    def update_gb_models(self, observations: np.ndarray, targets: np.ndarray) -> None:
+        """
+        Update the GBM model with new data and add new estimators.
+        """
+        if self.is_gb_fitted:
+            for e in self.gb_model.estimators_:
+                e.n_estimators += self.new_estimators
+
+        self.gb_model.fit(observations, targets)
+        self.is_gb_fitted = True
 
 
 class DQNPolicy(BasePolicy):
@@ -212,6 +284,21 @@ class DQNPolicy(BasePolicy):
 
 
 MlpPolicy = DQNPolicy
+
+
+class HybridDQNPolicy(DQNPolicy):
+    """
+    Policy class for DQN using the hybrid Q-network
+    """
+    q_net: HybridQNetwork
+    q_net_target: HybridQNetwork
+
+    def make_q_net(self) -> HybridQNetwork:
+        net_args = self._update_features_extractor(self.net_args, features_extractor=None)
+        return HybridQNetwork(**net_args).to(self.device)
+
+
+HybridPolicy = HybridDQNPolicy
 
 
 class CnnPolicy(DQNPolicy):

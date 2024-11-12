@@ -85,6 +85,7 @@ setup(
         "pandas",
         # Plotting learning curves
         "matplotlib",
+        "scikit-learn",
     ],
     extras_require={
         "tests": [
