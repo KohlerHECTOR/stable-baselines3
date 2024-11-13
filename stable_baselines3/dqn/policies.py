@@ -104,6 +104,7 @@ class HybridQNetwork(QNetwork):
         normalize_images: bool = True,
         gb_depth: int = 3,
         gb_new_estimators: int = 1,
+        learning_rate_gb: float = 1e-1,
     ) -> None:
         super().__init__(
             observation_space,
@@ -118,7 +119,7 @@ class HybridQNetwork(QNetwork):
         # Initialize single multi-output GBM
         self.new_estimators = gb_new_estimators
         # TODO: add seed in random_state
-        self.gb_model = [GradientBoostingRegressor(max_depth=gb_depth, n_estimators=gb_new_estimators)] * action_space.n
+        self.gb_model = [GradientBoostingRegressor(max_depth=gb_depth, n_estimators=gb_new_estimators, learning_rate=learning_rate_gb)] * action_space.n
 
     def forward(self, obs: PyTorchObs) -> th.Tensor:
         """
@@ -297,6 +298,38 @@ class HybridDQNPolicy(DQNPolicy):
     q_net: HybridQNetwork
     q_net_target: HybridQNetwork
 
+    def __init__(
+        self,
+        observation_space: spaces.Space,
+        action_space: spaces.Discrete,
+        lr_schedule: Schedule,
+        net_arch: Optional[List[int]] = None,
+        activation_fn: Type[nn.Module] = nn.ReLU,
+        features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
+        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
+        normalize_images: bool = True,
+        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        depth: int = 3,
+        new_estimators: int = 1,
+        lr_gb: float = 1e-1,
+    ) -> None:
+        super().__init__(
+            observation_space,
+            action_space,
+            lr_schedule,
+            net_arch,
+            activation_fn,
+            features_extractor_class,
+            features_extractor_kwargs,
+            normalize_images,
+            optimizer_class,
+            optimizer_kwargs,
+        )
+        self.lr_gb = lr_gb
+        self.depth = depth
+        self.new_estimators = new_estimators
+
     def _build(self, lr_schedule: Schedule) -> None:
         """
         Create the network and the optimizer.
@@ -323,7 +356,7 @@ class HybridDQNPolicy(DQNPolicy):
 
     def make_q_net(self) -> HybridQNetwork:
         net_args = self._update_features_extractor(self.net_args, features_extractor=None)
-        return HybridQNetwork(**net_args).to(self.device)
+        return HybridQNetwork(**net_args, gb_new_estimators=self.new_estimators, gb_depth=self.depth, learning_rate_gb=self.lr_gb).to(self.device)
 
 
 HybridPolicy = HybridDQNPolicy

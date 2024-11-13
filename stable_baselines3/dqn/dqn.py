@@ -295,6 +295,7 @@ class HybridDQN(DQN):
 
     def __init__(
         self,
+        policy: HybridDQNPolicy,
         env: Union[GymEnv, str],
         gb_freq: int = 1,
         learning_rate: Union[float, Schedule] = 1e-4,
@@ -353,7 +354,6 @@ class HybridDQN(DQN):
         self._qnet_updates = 0
         self.gb_freq = gb_freq
 
-
     def _on_step(self) -> None:
         """
         Update the exploration rate and target network if needed.
@@ -394,7 +394,7 @@ class HybridDQN(DQN):
         )
         [temp_replay.add(replay_data_global.observations[indx], replay_data_global.next_observations[indx], replay_data_global.actions[indx], replay_data_global.rewards[indx], replay_data_global.dones[indx], [{"EMPTY":None}] * self.replay_buffer.n_envs) for indx in range(batch_size * gradient_steps)]
 
-        if self._qnet_updates % self.gb_freq == 0:
+        if (self._qnet_updates + 1) % self.gb_freq == 0:
             with th.no_grad():
                 # Compute target values
                 next_q_values = self.q_net_target(replay_data_global.next_observations)
@@ -441,6 +441,7 @@ class HybridDQN(DQN):
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
         for a in range(self.action_space.n):
-            self.logger.record(f"train/gb_loss_action_{a}", self.q_net.gb_model[a].train_score_[-1])
-            self.logger.record(f"train/nb_param_gb_action_{a}", sum([e[0].tree_.node_count for e in self.q_net.gb_model[a].estimators_]))
+            if self.q_net.gb_model[a]._is_fitted():
+                self.logger.record(f"train/gb_loss_action_{a}", self.q_net.gb_model[a].train_score_[-1])
+                self.logger.record(f"train/nb_param_gb_action_{a}", sum([e[0].tree_.node_count for e in self.q_net.gb_model[a].estimators_]))
 
