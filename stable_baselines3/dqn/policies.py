@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Type
 
 from sklearn.multioutput import MultiOutputRegressor
@@ -115,10 +116,9 @@ class HybridQNetwork(QNetwork):
         )
         
         # Initialize single multi-output GBM
-        base_gb = GradientBoostingRegressor(max_depth=(self.action_space.n - 1 + gb_depth), n_estimators=gb_new_estimators)
         self.new_estimators = gb_new_estimators
-        self.gb_model = MultiOutputRegressor(base_gb)
-        self.is_gb_fitted = False
+        # TODO: add seed in random_state
+        self.gb_model = [GradientBoostingRegressor(max_depth=gb_depth, n_estimators=gb_new_estimators)] * action_space.n
 
     def forward(self, obs: PyTorchObs) -> th.Tensor:
         """
@@ -127,34 +127,38 @@ class HybridQNetwork(QNetwork):
         # Get MLP predictions
         mlp_q_values = super().forward(obs)
         
-        # If GBM not fitted yet, return only MLP predictions
-        if not self.is_gb_fitted:
-            return mlp_q_values
+        with th.no_grad():
+            extracted_features = self.extract_features(obs, self.features_extractor)
+        features = extracted_features.reshape(extracted_features.shape[0], -1)
+        features_np = features.cpu().numpy()
             
-        # Get GBM predictions
-        if isinstance(obs, dict):
-            # Handle dict observations
-            features = th.cat([v.reshape(v.shape[0], -1) for v in obs.values()], dim=1)
-        else:
-            features = obs.reshape(obs.shape[0], -1)
-            
-        features_np = features.detach().cpu().numpy()
-        gb_pred = self.gb_model.predict(features_np)
-        gb_predictions = th.from_numpy(gb_pred).to(mlp_q_values.device)
-            
-        # Return sum of predictions
-        return mlp_q_values + gb_predictions
+        for a in range(self.action_space.n):
+            if self.gb_model[a]._is_fitted():
+                gb_predictions = th.from_numpy(self.gb_model[a].predict(features_np)).to(mlp_q_values.device)
+                mlp_q_values[:,a] = mlp_q_values[:,a] + gb_predictions
 
-    def update_gb_models(self, observations: np.ndarray, targets: np.ndarray) -> None:
+        return mlp_q_values
+    
+    def update_gb_model(self, observations: th.Tensor, targets: th.Tensor, actions: th.Tensor) -> None:
         """
-        Update the GBM model with new data and add new estimators.
+        Update the GBM model for action action_idx with new data and add new estimators.
         """
-        if self.is_gb_fitted:
-            for e in self.gb_model.estimators_:
-                e.n_estimators += self.new_estimators
+        targets_np = targets.cpu().numpy().ravel()
+        actions_np = actions.cpu().numpy()
+        with th.no_grad():
+            extracted_features = self.extract_features(observations, self.features_extractor)
+        features = extracted_features.reshape(extracted_features.shape[0], -1)
+        obs_np = features.cpu().numpy()
 
-        self.gb_model.fit(observations, targets)
-        self.is_gb_fitted = True
+        for a in range(self.action_space.n):
+            idx_actions = (actions_np==a).nonzero()[0]
+            
+            if not self.gb_model[a]._is_fitted():
+                self.gb_model[a].fit(obs_np[idx_actions], targets_np[idx_actions])
+            else:
+                self.gb_model[a].n_estimators += self.new_estimators
+                self.gb_model[a].fit(obs_np[idx_actions], targets_np[idx_actions])
+            assert self.gb_model[a]._is_fitted()
 
 
 class DQNPolicy(BasePolicy):
@@ -292,6 +296,30 @@ class HybridDQNPolicy(DQNPolicy):
     """
     q_net: HybridQNetwork
     q_net_target: HybridQNetwork
+
+    def _build(self, lr_schedule: Schedule) -> None:
+        """
+        Create the network and the optimizer.
+
+        Put the target network into evaluation mode.
+
+        :param lr_schedule: Learning rate schedule
+            lr_schedule(1) is the initial learning rate
+        """
+
+        self.q_net = self.make_q_net()
+        self.q_net_target = self.make_q_net()
+        self.q_net_target.load_state_dict(self.q_net.state_dict())
+        for a in range(self.action_space.n):
+            self.q_net_target.gb_model[a] = deepcopy(self.q_net.gb_model[a])
+        self.q_net_target.set_training_mode(False)
+
+        # Setup optimizer with initial learning rate
+        self.optimizer = self.optimizer_class(  # type: ignore[call-arg]
+            self.q_net.parameters(),
+            lr=lr_schedule(1),
+            **self.optimizer_kwargs,
+        )
 
     def make_q_net(self) -> HybridQNetwork:
         net_args = self._update_features_extractor(self.net_args, features_extractor=None)

@@ -1,3 +1,4 @@
+from copy import deepcopy
 import warnings
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
@@ -295,6 +296,7 @@ class HybridDQN(DQN):
     def __init__(
         self,
         env: Union[GymEnv, str],
+        gb_freq: int = 1,
         learning_rate: Union[float, Schedule] = 1e-4,
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
@@ -346,6 +348,31 @@ class HybridDQN(DQN):
             device,
             _init_setup_model,
         )
+        assert self.n_envs == 1, "Only compatible with n_envs=1"
+        assert not isinstance(self.env.observation_space, spaces.Dict), "Not compatible with Dict observations"
+        self._qnet_updates = 0
+        self.gb_freq = gb_freq
+
+
+    def _on_step(self) -> None:
+        """
+        Update the exploration rate and target network if needed.
+        This method is called in ``collect_rollouts()`` after each step in the environment.
+        """
+        self._n_calls += 1
+        # Account for multiple environments
+        # each call to step() corresponds to n_envs transitions
+        if self._n_calls % max(self.target_update_interval // self.n_envs, 1) == 0:
+            polyak_update(self.q_net.parameters(), self.q_net_target.parameters(), self.tau)
+            # TODO: append estimators rather than copy for speedup
+            for a in range(self.action_space.n):
+                self.q_net_target.gb_model[a] = deepcopy(self.q_net.gb_model[a])
+            # Copy running stats, see GH issue #996
+            polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+
+        self.exploration_rate = self.exploration_schedule(self._current_progress_remaining)
+        self.logger.record("rollout/exploration_rate", self.exploration_rate)
+
 
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         # Switch to train mode (this affects batch norm / dropout)
@@ -367,58 +394,37 @@ class HybridDQN(DQN):
         )
         [temp_replay.add(replay_data_global.observations[indx], replay_data_global.next_observations[indx], replay_data_global.actions[indx], replay_data_global.rewards[indx], replay_data_global.dones[indx], [{"EMPTY":None}] * self.replay_buffer.n_envs) for indx in range(batch_size * gradient_steps)]
 
-        # Convert observations to numpy for GBM
-        if isinstance(replay_data_global.observations, dict):
-            obs_np = np.concatenate([v.cpu().numpy().reshape(v.shape[0], -1) 
-                                for v in replay_data_global.observations.values()], axis=1)
-        else:
-            obs_np = replay_data_global.observations.cpu().numpy().reshape(replay_data_global.observations.shape[0], -1)
-        
-        with th.no_grad():
-            # Compute target values
-            next_q_values = self.q_net_target(replay_data_global.next_observations)
-            next_q_values, _ = next_q_values.max(dim=1)
-            next_q_values = next_q_values.reshape(-1, 1)
-            target_q_values = replay_data_global.rewards + (1 - replay_data_global.dones) * self.gamma * next_q_values# Update GBM models
-        
+        if self._qnet_updates % self.gb_freq == 0:
+            with th.no_grad():
+                # Compute target values
+                next_q_values = self.q_net_target(replay_data_global.next_observations)
+                next_q_values, _ = next_q_values.max(dim=1)
+                next_q_values = next_q_values.reshape(-1, 1)
+                target_q_values = replay_data_global.rewards + (1 - replay_data_global.dones) * self.gamma * next_q_values
 
-            predict_actions = self.q_net.forward(replay_data_global.observations)
-        targets = predict_actions.cpu().numpy()
-        targets[:,replay_data_global.actions.cpu().numpy()] = target_q_values.cpu().numpy()
-        self.q_net.update_gb_models(
-            obs_np,
-            targets
-        )
+            self.q_net.update_gb_model(
+                replay_data_global.observations,
+                target_q_values,
+                replay_data_global.actions,
+            )
 
         for _ in range(gradient_steps):
             # Sample replay buffer
             replay_data = temp_replay.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
             with th.no_grad():
-                # Compute the next Q-values using the target network
                 next_q_values = self.q_net_target(replay_data.next_observations)
-                # Follow greedy policy: use the one with the highest value
                 next_q_values, _ = next_q_values.max(dim=1)
-                # Avoid potential broadcast issue
                 next_q_values = next_q_values.reshape(-1, 1)
-                # 1-step TD target
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
-            if isinstance(replay_data.observations, dict):
-                obs_np = np.concatenate([v.cpu().numpy().reshape(v.shape[0], -1) 
-                                    for v in replay_data.observations.values()], axis=1)
-            else:
-                obs_np = replay_data.observations.cpu().numpy().reshape(replay_data.observations.shape[0], -1)
-
-            # TODO:
-            # Get current Q-values estimates
             current_q_values = self.q_net(replay_data.observations)
 
             # Retrieve the q-values for the actions from the replay buffer
             current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
 
             # Compute Huber loss (less sensitive to outliers)
-            loss = F.smooth_l1_loss(current_q_values, residual)
+            loss = F.smooth_l1_loss(current_q_values, target_q_values)
             losses.append(loss.item())
 
             # Optimize the policy
@@ -430,6 +436,11 @@ class HybridDQN(DQN):
 
         # Increase update counter
         self._n_updates += gradient_steps
+        self._qnet_updates += 1
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
+        for a in range(self.action_space.n):
+            self.logger.record(f"train/gb_loss_action_{a}", self.q_net.gb_model[a].train_score_[-1])
+            self.logger.record(f"train/nb_param_gb_action_{a}", sum([e[0].tree_.node_count for e in self.q_net.gb_model[a].estimators_]))
+
