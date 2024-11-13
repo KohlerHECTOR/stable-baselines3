@@ -314,6 +314,9 @@ class HybridDQNPolicy(DQNPolicy):
         new_estimators: int = 1,
         lr_gb: float = 1e-1,
     ) -> None:
+        self.lr_gb = lr_gb
+        self.depth = depth
+        self.new_estimators = new_estimators
         super().__init__(
             observation_space,
             action_space,
@@ -326,10 +329,7 @@ class HybridDQNPolicy(DQNPolicy):
             optimizer_class,
             optimizer_kwargs,
         )
-        self.lr_gb = lr_gb
-        self.depth = depth
-        self.new_estimators = new_estimators
-
+        
     def _build(self, lr_schedule: Schedule) -> None:
         """
         Create the network and the optimizer.
