@@ -442,6 +442,8 @@ class HybridDQN(DQN):
         qvals = self.q_net(replay_data_global.observations).gather(replay_data_global.actions)
         tree_preds = (replay_data_global.observations, replay_data_global.actions)
         r2 = 1 - th.var(qvals - tree_preds) / th.var(qvals)
+        norm_tree = th.norm(tree_preds)
+        norm_mlp = th.norm(qvals - tree_preds)
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
