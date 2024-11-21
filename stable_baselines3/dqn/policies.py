@@ -126,7 +126,7 @@ class HybridQNetwork(QNetwork):
         Predict Q-values as sum of GBM and MLP predictions
         """
         # Get MLP predictions
-        mlp_q_values = super().forward(obs)
+        mlp_q_values = self.q_net(self.extract_features(obs, self.features_extractor))
         
         with th.no_grad():
             extracted_features = self.extract_features(obs, self.features_extractor)

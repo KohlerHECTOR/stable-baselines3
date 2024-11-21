@@ -39,7 +39,7 @@ params_cartpole_zoo = {
     "buffer_size": 100000,
     "learning_starts": 1000,
     "gamma": 0.99,
-    "target_update_interval": 1000, # 100 times more than sb3 zoo for cartpole because now target update of gb is slow
+    "target_update_interval": 10,
     "train_freq": 256,
     "gradient_steps": 128,
     "exploration_fraction": 0.16,

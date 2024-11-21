@@ -439,14 +439,23 @@ class HybridDQN(DQN):
         self._qnet_updates += 1
 
         # Logging tree explained variance
-        qvals = self.q_net(replay_data_global.observations).gather(replay_data_global.actions)
-        tree_preds = (replay_data_global.observations, replay_data_global.actions)
-        r2 = 1 - th.var(qvals - tree_preds) / th.var(qvals)
-        norm_tree = th.norm(tree_preds)
-        norm_mlp = th.norm(qvals - tree_preds)
+        # TODO: very slow and useless operations
+        with th.no_grad():
+            qvals_tot = self.q_net(replay_data_global.observations)
+            qvals_mlp = self.q_net.q_net(self.q_net.extract_features(replay_data_global.observations, self.q_net.features_extractor))
+            qvals_tree = qvals_tot - qvals_mlp
+        norm_tree = th.norm(qvals_tree)
+        norm_mlp = th.norm(qvals_mlp)
+        r2 = 1 - th.var(qvals_tot.gather(dim=1, index=replay_data_global.actions.long()) - qvals_tree.gather(dim=1, index=replay_data_global.actions.long())) / th.var(qvals_tot.gather(dim=1, index=replay_data_global.actions.long()) )
+
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
+        self.logger.record("train/norm_tree", norm_tree.item())
+        self.logger.record("train/norm_mlp", norm_mlp.item())
+        self.logger.record("train/expl_var_tree", r2.item())
+
+
         for a in range(self.action_space.n):
             if self.q_net.gb_model[a]._is_fitted():
                 self.logger.record(f"train/gb_loss_action_{a}", self.q_net.gb_model[a].train_score_[-1])
