@@ -62,11 +62,11 @@ env = gym.make("CartPole-v1")
 env_dqn = Monitor(env, log_dir_dqn)
 env_hdqn = Monitor(env, log_dir_hdqn)
 
-model1 = DQN("MlpPolicy", env_dqn, seed=42, **params_cartpole_zoo)
+model1 = DQN("MlpPolicy", env_dqn, seed=42, **params_cartpole_zoo, verbose=1)
 model1.learn(1e5)
 
 params_cartpole_zoo["policy_kwargs"].update(dict(new_estimators=1, lr_gb=2.3e-3, depth=3))
-model2 = HybridDQN("HybridPolicy", env_hdqn, gb_freq=1, seed=42, **params_cartpole_zoo)
+model2 = HybridDQN("HybridPolicy", env_hdqn, gb_freq=1, seed=42, **params_cartpole_zoo, verbose=1)
 model2.learn(1e5)
 
 
