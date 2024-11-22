@@ -1,4 +1,4 @@
-from copy import deepcopy
+from copy import copy, deepcopy
 import warnings
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
@@ -12,7 +12,16 @@ from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_linear_fn, get_parameters_by_name, polyak_update
-from stable_baselines3.dqn.policies import CnnPolicy, DQNPolicy, MlpPolicy, MultiInputPolicy, QNetwork, HybridPolicy, HybridDQNPolicy, HybridQNetwork
+from stable_baselines3.dqn.policies import (
+    CnnPolicy,
+    DQNPolicy,
+    MlpPolicy,
+    MultiInputPolicy,
+    QNetwork,
+    HybridPolicy,
+    HybridDQNPolicy,
+    HybridQNetwork,
+)
 
 SelfDQN = TypeVar("SelfDQN", bound="DQN")
 
@@ -189,9 +198,27 @@ class DQN(OffPolicyAlgorithm):
         self._update_learning_rate(self.policy.optimizer)
 
         losses = []
-        for _ in range(gradient_steps):
+
+        for gs_ in range(gradient_steps):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+
+            if gs_ > 0:
+                replayed_obs, replayed_actions, replayed_next_obs, replayed_dones, replayed_rewards = (
+                    th.concatenate((replayed_obs, replay_data.observations)),
+                    th.concatenate((replayed_actions, replay_data.actions)),
+                    th.concatenate((replayed_next_obs, replay_data.next_observations)),
+                    th.concatenate((replayed_dones, replay_data.dones)),
+                    th.concatenate((replayed_rewards, replay_data.rewards)),
+                )
+            else:
+                replayed_obs, replayed_actions, replayed_next_obs, replayed_dones, replayed_rewards = (
+                    copy(replay_data.observations),
+                    copy(replay_data.actions),
+                    copy(replay_data.next_observations),
+                    copy(replay_data.dones),
+                    copy(replay_data.rewards),
+                )
 
             with th.no_grad():
                 # Compute the next Q-values using the target network
@@ -205,7 +232,6 @@ class DQN(OffPolicyAlgorithm):
 
             # Get current Q-values estimates
             current_q_values = self.q_net(replay_data.observations)
-
             # Retrieve the q-values for the actions from the replay buffer
             current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
 
@@ -225,6 +251,9 @@ class DQN(OffPolicyAlgorithm):
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
+        with th.no_grad():
+            qvals = self.q_net(replayed_obs)
+        self.logger.record("train/norm_mlp", th.mean(th.abs(qvals)).item())
 
     def predict(
         self,
@@ -373,7 +402,6 @@ class HybridDQN(DQN):
         self.exploration_rate = self.exploration_schedule(self._current_progress_remaining)
         self.logger.record("rollout/exploration_rate", self.exploration_rate)
 
-
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
@@ -381,47 +409,54 @@ class HybridDQN(DQN):
         self._update_learning_rate(self.policy.optimizer)
 
         losses = []
-        replay_data_global = self.replay_buffer.sample(batch_size * gradient_steps, env=self._vec_normalize_env)
+        list_indices = [0]
 
-        temp_replay = ReplayBuffer(
-            buffer_size=batch_size * gradient_steps,
-            observation_space=self.replay_buffer.observation_space,
-            action_space=self.replay_buffer.action_space,
-            device=self.replay_buffer.device,
-            n_envs=self.replay_buffer.n_envs,
-            optimize_memory_usage=self.replay_buffer.optimize_memory_usage,
-            handle_timeout_termination=self.replay_buffer.handle_timeout_termination,
-        )
-        [temp_replay.add(replay_data_global.observations[indx], replay_data_global.next_observations[indx], replay_data_global.actions[indx], replay_data_global.rewards[indx], replay_data_global.dones[indx], [{"EMPTY":None}] * self.replay_buffer.n_envs) for indx in range(batch_size * gradient_steps)]
+        for gs_ in range(gradient_steps):
+            # Sample replay buffer
+            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+            if gs_ > 0:
+                replayed_obs, replayed_actions, replayed_next_obs, replayed_dones, replayed_rewards = (
+                    th.concatenate((replayed_obs, replay_data.observations)),
+                    th.concatenate((replayed_actions, replay_data.actions)),
+                    th.concatenate((replayed_next_obs, replay_data.next_observations)),
+                    th.concatenate((replayed_dones, replay_data.dones)),
+                    th.concatenate((replayed_rewards, replay_data.rewards)),
+                )
+            else:
+                replayed_obs, replayed_actions, replayed_next_obs, replayed_dones, replayed_rewards = (
+                    copy(replay_data.observations),
+                    copy(replay_data.actions),
+                    copy(replay_data.next_observations),
+                    copy(replay_data.dones),
+                    copy(replay_data.rewards),
+                )
+            list_indices.append(len(replayed_obs))
 
         if (self._qnet_updates + 1) % self.gb_freq == 0:
             with th.no_grad():
                 # Compute target values
-                next_q_values = self.q_net_target(replay_data_global.next_observations)
+                next_q_values = self.q_net_target(replayed_next_obs)
                 next_q_values, _ = next_q_values.max(dim=1)
                 next_q_values = next_q_values.reshape(-1, 1)
-                target_q_values = replay_data_global.rewards + (1 - replay_data_global.dones) * self.gamma * next_q_values
+                target_q_values = replayed_rewards + (1 - replayed_dones) * self.gamma * next_q_values
 
             self.q_net.update_gb_model(
-                replay_data_global.observations,
+                replayed_obs,
                 target_q_values,
-                replay_data_global.actions,
+                replayed_actions,
             )
 
-        for _ in range(gradient_steps):
-            # Sample replay buffer
-            replay_data = temp_replay.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-
+        for idx in range(len(list_indices) - 1):
             with th.no_grad():
-                next_q_values = self.q_net_target(replay_data.next_observations)
+                next_q_values = self.q_net_target(replayed_next_obs[list_indices[idx]:list_indices[idx+1]])
                 next_q_values, _ = next_q_values.max(dim=1)
                 next_q_values = next_q_values.reshape(-1, 1)
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                target_q_values = replayed_rewards[list_indices[idx]:list_indices[idx+1]] + (1 - replayed_dones[list_indices[idx]:list_indices[idx+1]]) * self.gamma * next_q_values
 
-            current_q_values = self.q_net(replay_data.observations)
+            current_q_values = self.q_net(replayed_obs[list_indices[idx]:list_indices[idx+1]])
 
             # Retrieve the q-values for the actions from the replay buffer
-            current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
+            current_q_values = th.gather(current_q_values, dim=1, index=replayed_actions[list_indices[idx]:list_indices[idx+1]].long())
 
             # Compute Huber loss (less sensitive to outliers)
             loss = F.smooth_l1_loss(current_q_values, target_q_values)
@@ -441,13 +476,18 @@ class HybridDQN(DQN):
         # Logging tree explained variance
         # TODO: very slow and useless operations
         with th.no_grad():
-            qvals_tot = self.q_net(replay_data_global.observations)
-            qvals_mlp = self.q_net.q_net(self.q_net.extract_features(replay_data_global.observations, self.q_net.features_extractor))
+            qvals_tot = self.q_net(replayed_obs)
+            qvals_mlp = self.q_net.q_net(
+                self.q_net.extract_features(replayed_obs, self.q_net.features_extractor)
+            )
             qvals_tree = qvals_tot - qvals_mlp
-        norm_tree = th.norm(qvals_tree)
-        norm_mlp = th.norm(qvals_mlp)
-        r2 = 1 - th.var(qvals_tot.gather(dim=1, index=replay_data_global.actions.long()) - qvals_tree.gather(dim=1, index=replay_data_global.actions.long())) / th.var(qvals_tot.gather(dim=1, index=replay_data_global.actions.long()) )
 
+        norm_tree = th.mean(th.abs(qvals_tree))
+        norm_mlp = th.mean(th.abs(qvals_mlp))
+        r2 = 1 - th.var(
+            qvals_tot.gather(dim=1, index=replayed_actions.long())
+            - qvals_tree.gather(dim=1, index=replayed_actions.long())
+        ) / th.var(qvals_tot.gather(dim=1, index=replayed_actions.long()))
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
@@ -455,9 +495,9 @@ class HybridDQN(DQN):
         self.logger.record("train/norm_mlp", norm_mlp.item())
         self.logger.record("train/expl_var_tree", r2.item())
 
-
         for a in range(self.action_space.n):
             if self.q_net.gb_model[a]._is_fitted():
                 self.logger.record(f"train/gb_loss_action_{a}", self.q_net.gb_model[a].train_score_[-1])
-                self.logger.record(f"train/nb_param_gb_action_{a}", sum([e[0].tree_.node_count for e in self.q_net.gb_model[a].estimators_]))
-
+                self.logger.record(
+                    f"train/nb_param_gb_action_{a}", sum([e[0].tree_.node_count for e in self.q_net.gb_model[a].estimators_])
+                )

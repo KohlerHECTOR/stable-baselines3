@@ -93,6 +93,7 @@ class HybridQNetwork(QNetwork):
     """
     Hybrid Q-Network that combines a GradientBoostingRegressor and an MLP
     """
+
     def __init__(
         self,
         observation_space: spaces.Space,
@@ -115,11 +116,13 @@ class HybridQNetwork(QNetwork):
             activation_fn,
             normalize_images,
         )
-        
+
         # Initialize single multi-output GBM
         self.new_estimators = gb_new_estimators
         # TODO: add seed in random_state
-        self.gb_model = [GradientBoostingRegressor(max_depth=gb_depth, n_estimators=gb_new_estimators, learning_rate=learning_rate_gb)] * action_space.n
+        self.gb_model = [
+            GradientBoostingRegressor(max_depth=gb_depth, n_estimators=gb_new_estimators, learning_rate=learning_rate_gb)
+        ] * action_space.n
 
     def forward(self, obs: PyTorchObs) -> th.Tensor:
         """
@@ -127,19 +130,19 @@ class HybridQNetwork(QNetwork):
         """
         # Get MLP predictions
         mlp_q_values = self.q_net(self.extract_features(obs, self.features_extractor))
-        
+
         with th.no_grad():
             extracted_features = self.extract_features(obs, self.features_extractor)
         features = extracted_features.reshape(extracted_features.shape[0], -1)
         features_np = features.cpu().numpy()
-            
+
         for a in range(self.action_space.n):
             if self.gb_model[a]._is_fitted():
                 gb_predictions = th.from_numpy(self.gb_model[a].predict(features_np)).to(mlp_q_values.device)
-                mlp_q_values[:,a] = mlp_q_values[:,a] + gb_predictions
+                mlp_q_values[:, a] = mlp_q_values[:, a] + gb_predictions
 
         return mlp_q_values
-    
+
     def update_gb_model(self, observations: th.Tensor, targets: th.Tensor, actions: th.Tensor) -> None:
         """
         Update the GBM model for action action_idx with new data and add new estimators.
@@ -152,8 +155,8 @@ class HybridQNetwork(QNetwork):
         obs_np = features.cpu().numpy()
 
         for a in range(self.action_space.n):
-            idx_actions = (actions_np==a).nonzero()[0]
-            
+            idx_actions = (actions_np == a).nonzero()[0]
+
             if not self.gb_model[a]._is_fitted():
                 self.gb_model[a].fit(obs_np[idx_actions], targets_np[idx_actions])
             else:
@@ -295,6 +298,7 @@ class HybridDQNPolicy(DQNPolicy):
     """
     Policy class for DQN using the hybrid Q-network
     """
+
     q_net: HybridQNetwork
     q_net_target: HybridQNetwork
 
@@ -329,7 +333,7 @@ class HybridDQNPolicy(DQNPolicy):
             optimizer_class,
             optimizer_kwargs,
         )
-        
+
     def _build(self, lr_schedule: Schedule) -> None:
         """
         Create the network and the optimizer.
@@ -356,7 +360,9 @@ class HybridDQNPolicy(DQNPolicy):
 
     def make_q_net(self) -> HybridQNetwork:
         net_args = self._update_features_extractor(self.net_args, features_extractor=None)
-        return HybridQNetwork(**net_args, gb_new_estimators=self.new_estimators, gb_depth=self.depth, learning_rate_gb=self.lr_gb).to(self.device)
+        return HybridQNetwork(
+            **net_args, gb_new_estimators=self.new_estimators, gb_depth=self.depth, learning_rate_gb=self.lr_gb
+        ).to(self.device)
 
 
 HybridPolicy = HybridDQNPolicy
