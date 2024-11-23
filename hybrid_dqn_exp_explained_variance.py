@@ -8,7 +8,7 @@ params_cartpole_zoo = {
     "buffer_size": 100000,
     "learning_starts": 1000,
     "gamma": 0.99,
-    "target_update_interval": 10,
+    "target_update_interval": 100, # for more stability
     "train_freq": 256,
     "gradient_steps": 128,
     "exploration_fraction": 0.16,
@@ -23,4 +23,4 @@ for seed in range(10):
         params_cartpole_zoo["policy_kwargs"]["new_estimators"] = new_estimator
         env = gym.make("CartPole-v1")
         model = HybridDQN("HybridPolicy", env, seed=seed, **params_cartpole_zoo, tensorboard_log="./hybrid_dqn/")
-        model.learn(1e5, tb_log_name=f"new_estimators_{new_estimator}_seed_{seed}")
+        model.learn(1e5, tb_log_name=f"new_estimators_{new_estimator}_seed_{seed}_less_target_updates")
