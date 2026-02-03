@@ -5,6 +5,7 @@ from typing import Any, TypeVar
 
 import numpy as np
 import torch as th
+from torch_geometric.data import Data
 from gymnasium import spaces
 
 from stable_baselines3.common.base_class import BaseAlgorithm
@@ -198,6 +199,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
+                if isinstance(self.policy.observation_space, spaces.Graph):
+                    # TODO
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)  # type: ignore[arg-type]
                 actions, values, log_probs = self.policy(obs_tensor)
             actions = actions.cpu().numpy()

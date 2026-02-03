@@ -161,7 +161,8 @@ def get_obs_shape(
         return observation_space.shape
     elif isinstance(observation_space, spaces.Dict):
         return {key: get_obs_shape(subspace) for (key, subspace) in observation_space.spaces.items()}  # type: ignore[misc]
-
+    elif isinstance(observation_space, spaces.Graph):
+        return (1, )
     else:
         raise NotImplementedError(f"{observation_space} observation space is not supported")
 
