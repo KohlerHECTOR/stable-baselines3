@@ -112,6 +112,9 @@ def preprocess_obs(
             preprocessed_obs[key] = preprocess_obs(_obs, observation_space[key], normalize_images=normalize_images)
         return preprocessed_obs  # type: ignore[return-value]
 
+    if isinstance(observation_space, spaces.Graph):
+        return obs
+    
     assert isinstance(obs, th.Tensor), f"Expecting a torch Tensor, but got {type(obs)}"
 
     if isinstance(observation_space, spaces.Box):

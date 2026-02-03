@@ -173,6 +173,8 @@ class BaseAlgorithm(ABC):
             self.action_space = env.action_space
             self.n_envs = env.num_envs
             self.env = env
+            if isinstance(self.observation_space, spaces.Graph) and self.n_envs > 1:
+                raise ValueError('For now graph rl only works with 1 env at a time')
 
             # get VecNormalize object if needed
             self._vec_normalize_env = unwrap_vec_normalize(env)

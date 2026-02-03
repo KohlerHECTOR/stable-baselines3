@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import torch as th
 from gymnasium import spaces
+from torch_geometric.data import Data, Batch
 
 from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
 from stable_baselines3.common.type_aliases import (
@@ -389,7 +390,10 @@ class RolloutBuffer(BaseBuffer):
         self.reset()
 
     def reset(self) -> None:
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=self.observation_space.dtype)
+        if isinstance(self.observation_space, spaces.Graph):
+            self.observations = np.empty((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object)
+        else:
+            self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=self.observation_space.dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=self.action_space.dtype)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -467,8 +471,10 @@ class RolloutBuffer(BaseBuffer):
 
         # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
         action = action.reshape((self.n_envs, self.action_dim))
-
-        self.observations[self.pos] = np.array(obs)
+        if isinstance(self.observation_space, spaces.Graph):
+            self.observations[self.pos] = obs
+        else:
+            self.observations[self.pos] = np.array(obs)
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
         self.episode_starts[self.pos] = np.array(episode_start)
@@ -511,7 +517,6 @@ class RolloutBuffer(BaseBuffer):
         env: VecNormalize | None = None,
     ) -> RolloutBufferSamples:
         data = (
-            self.observations[batch_inds],
             # Cast to float32 (backward compatible), this would lead to RuntimeError for MultiBinary space
             self.actions[batch_inds].astype(np.float32, copy=False),
             self.values[batch_inds].flatten(),
@@ -519,7 +524,12 @@ class RolloutBuffer(BaseBuffer):
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
         )
-        return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
+        if isinstance(self.observation_space, spaces.Graph):
+            to_sample_obs = Batch.from_data_list([Data(x=th.from_numpy(g.nodes), edge_index=th.from_numpy(g.edge_links.T)) for g in self.observations[batch_inds].flatten()])
+        else:
+            to_sample_obs = self.observations[batch_inds]
+        to_sample_data = (to_sample_obs, *tuple(map(self.to_torch, data)))
+        return RolloutBufferSamples(*to_sample_data)
 
 
 class DictReplayBuffer(ReplayBuffer):
