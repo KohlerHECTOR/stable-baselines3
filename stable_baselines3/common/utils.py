@@ -12,6 +12,7 @@ import gymnasium as gym
 import numpy as np
 import torch as th
 from gymnasium import spaces
+from torch_geometric.data import Data, Batch
 
 import stable_baselines3 as sb3
 
@@ -562,9 +563,14 @@ def obs_as_tensor(obs: np.ndarray | dict[str, np.ndarray], device: th.device) ->
     :return: PyTorch tensor of the observation on a desired device.
     """
     if isinstance(obs, np.ndarray):
-        return th.as_tensor(obs, device=device)
+        if isinstance(obs[0], spaces.GraphInstance):
+            return Batch.from_data_list([Data(x=th.from_numpy(obs_i.nodes), edge_index=th.from_numpy(obs_i.edge_links.T)).to(device) for obs_i in obs])
+        else:
+            return th.as_tensor(obs, device=device)
     elif isinstance(obs, dict):
         return {key: th.as_tensor(_obs, device=device) for (key, _obs) in obs.items()}
+    elif isinstance(obs, spaces.GraphInstance):
+        return Data(x=th.from_numpy(obs.nodes), edge_index=th.from_numpy(obs.edge_links.T)).to(device)
     else:
         raise TypeError(f"Unrecognized type of observation {type(obs)}")
 

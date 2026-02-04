@@ -264,6 +264,11 @@ class BaseModel(nn.Module):
             # as PyTorch use channel first format
             observation = maybe_transpose(observation, self.observation_space)
 
+        elif isinstance(self.observation_space, spaces.Graph):
+            obs_tensor = obs_as_tensor(observation, self.device)
+            if isinstance(observation, np.ndarray):
+                vectorized_env = True
+            return obs_tensor, vectorized_env
         else:
             observation = np.array(observation)
 

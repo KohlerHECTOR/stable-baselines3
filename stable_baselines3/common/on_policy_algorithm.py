@@ -199,10 +199,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
-                if isinstance(self.policy.observation_space, spaces.Graph):
-                    obs_tensor = Batch.from_data_list([Data(x=th.from_numpy(obs_env.nodes), edge_index=th.from_numpy(obs_env.edge_links.T)).to(self.device) for obs_env in self._last_obs])
-                else:
-                    obs_tensor = obs_as_tensor(self._last_obs, self.device)  # type: ignore[arg-type]
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)  # type: ignore[arg-type]
                 actions, values, log_probs = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
@@ -243,10 +240,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     and infos[idx].get("terminal_observation") is not None
                     and infos[idx].get("TimeLimit.truncated", False)
                 ):
-                    if isinstance(self.observation_space, spaces.Graph):
-                        terminal_obs = Data(x=th.from_numpy(infos[idx]["terminal_observation"].nodes), edge_index=th.from_numpy(infos[idx]["terminal_observation"].edge_links.T)).to(self.device)
-                    else:
-                        terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
                     rewards[idx] += self.gamma * terminal_value
@@ -264,10 +258,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         with th.no_grad():
             # Compute value for the last timestep
-            if isinstance(self.observation_space, spaces.Graph):
-                values = self.policy.predict_values(Batch.from_data_list([Data(x=th.from_numpy(obs_env.nodes), edge_index=th.from_numpy(obs_env.edge_links.T)).to(self.device) for obs_env in new_obs]))  # type: ignore[arg-type]
-            else:
-                values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 

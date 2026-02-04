@@ -105,8 +105,6 @@ def _check_unsupported_spaces(env: gym.Env, observation_space: spaces.Space, act
         for key, space in observation_space.spaces.items():
             if isinstance(space, spaces.Dict):
                 nested_dict = True
-            elif isinstance(space, spaces.Graph):
-                graph_space = True
             elif isinstance(space, spaces.Sequence):
                 sequence_space = True
             _check_non_zero_start(space, "observation", key)
@@ -140,8 +138,6 @@ def _check_unsupported_spaces(env: gym.Env, observation_space: spaces.Space, act
         for space in observation_space.spaces:
             if isinstance(space, spaces.Sequence):
                 sequence_space = True
-            elif isinstance(space, spaces.Graph):
-                graph_space = True
 
     # Check for Sequence spaces inside OneOf
     if _is_oneof_space(observation_space):
@@ -157,13 +153,6 @@ def _check_unsupported_spaces(env: gym.Env, observation_space: spaces.Space, act
         warnings.warn(
             "Sequence observation space is not supported by Stable-Baselines3. "
             "You can pad your observation to have a fixed size instead.\n"
-            "Note: The checks for returned values are skipped."
-        )
-        should_skip = True
-
-    if isinstance(observation_space, spaces.Graph) or graph_space:
-        warnings.warn(
-            "Graph observation space is not supported by Stable-Baselines3. "
             "Note: The checks for returned values are skipped."
         )
         should_skip = True
