@@ -248,14 +248,23 @@ class DQN(OffPolicyAlgorithm):
             (used in recurrent policies)
         """
         if not deterministic and np.random.rand() < self.exploration_rate:
-            if self.policy.is_vectorized_observation(observation):
-                if isinstance(observation, dict):
-                    n_batch = observation[next(iter(observation.keys()))].shape[0]
-                else:
+            if isinstance(self.observation_space, spaces.Graph) and isinstance(observation, np.ndarray):
+                if isinstance(observation, np.ndarray): # vectorized obs for graphs
                     n_batch = observation.shape[0]
-                action = np.array([self.action_space.sample() for _ in range(n_batch)])
+                    action = np.array([self.action_space.sample() for _ in range(n_batch)])
+                elif isinstance(observation, spaces.GraphInstance):
+                    action = np.array(self.action_space.sample())
+                else:
+                    raise TypeError('Problem with graph env')
             else:
-                action = np.array(self.action_space.sample())
+                if self.policy.is_vectorized_observation(observation):
+                    if isinstance(observation, dict):
+                        n_batch = observation[next(iter(observation.keys()))].shape[0]
+                    else:
+                        n_batch = observation.shape[0]
+                    action = np.array([self.action_space.sample() for _ in range(n_batch)])
+                else:
+                    action = np.array(self.action_space.sample())
         else:
             action, state = self.policy.predict(observation, state, episode_start, deterministic)
         return action, state

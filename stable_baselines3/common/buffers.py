@@ -7,6 +7,7 @@ import numpy as np
 import torch as th
 from gymnasium import spaces
 from torch_geometric.data import Data, Batch
+from copy import copy, deepcopy
 
 from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
 from stable_baselines3.common.type_aliases import (
@@ -194,7 +195,7 @@ class ReplayBuffer(BaseBuffer):
         handle_timeout_termination: bool = True,
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
-
+        assert not (isinstance(self.observation_space, spaces.Graph) and optimize_memory_usage), 'Graph space not compat with optim memory usage'
         # Adjust buffer size
         self.buffer_size = max(buffer_size // n_envs, 1)
 
@@ -210,12 +211,17 @@ class ReplayBuffer(BaseBuffer):
                 "and handle_timeout_termination = True simultaneously."
             )
         self.optimize_memory_usage = optimize_memory_usage
-
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=observation_space.dtype)
+        if isinstance(self.observation_space, spaces.Graph):
+            self.observations = np.empty((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object)
+        else:
+            self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=observation_space.dtype)
 
         if not optimize_memory_usage:
             # When optimizing memory, `observations` contains also the next observation
-            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=observation_space.dtype)
+            if isinstance(self.observation_space, spaces.Graph):
+                self.next_observations = np.empty((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object)
+            else:
+                self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=observation_space.dtype)
 
         self.actions = np.zeros(
             (self.buffer_size, self.n_envs, self.action_dim), dtype=self._maybe_cast_dtype(action_space.dtype)
@@ -264,12 +270,18 @@ class ReplayBuffer(BaseBuffer):
         action = action.reshape((self.n_envs, self.action_dim))
 
         # Copy to avoid modification by reference
-        self.observations[self.pos] = np.array(obs)
+        if isinstance(self.observation_space, spaces.Graph):
+            self.observations[self.pos] = copy(obs)
+        else:
+            self.observations[self.pos] = np.array(obs)
 
         if self.optimize_memory_usage:
             self.observations[(self.pos + 1) % self.buffer_size] = np.array(next_obs)
         else:
-            self.next_observations[self.pos] = np.array(next_obs)
+            if isinstance(self.observation_space, spaces.Graph):
+                self.next_observations[self.pos] = copy(next_obs)
+            else:
+                self.next_observations[self.pos] = np.array(next_obs)
 
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
@@ -310,20 +322,21 @@ class ReplayBuffer(BaseBuffer):
         env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
 
         if self.optimize_memory_usage:
-            next_obs = self._normalize_obs(self.observations[(batch_inds + 1) % self.buffer_size, env_indices, :], env)
+            next_obs = self.to_torch(self._normalize_obs(self.observations[(batch_inds + 1) % self.buffer_size, env_indices, :], env))
         else:
-            next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)
-
-        data = (
-            self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
-            self.actions[batch_inds, env_indices, :],
-            next_obs,
-            # Only use dones that are not due to timeouts
-            # deactivated by default (timeouts is initialized as an array of False)
-            (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
-            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
-        )
-        return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
+            if isinstance(self.observation_space, spaces.Graph):
+                next_obs = Batch.from_data_list([Data(x=th.from_numpy(g.nodes), edge_index=th.from_numpy(g.edge_links.T)) for g in self.next_observations[batch_inds, env_indices, :].flatten()])
+            else:
+                next_obs = self.to_torch(self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env))
+        
+        if isinstance(self.observation_space, spaces.Graph):
+            obs = Batch.from_data_list([Data(x=th.from_numpy(g.nodes), edge_index=th.from_numpy(g.edge_links.T)) for g in self.observations[batch_inds, env_indices, :].flatten()])
+        else:
+            obs = self.to_torch(self._normalize_obs(self.observations[batch_inds, env_indices, :], env),)
+        acts = self.to_torch(self.actions[batch_inds, env_indices, :])
+        dones = self.to_torch((self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1))
+        rews = self.to_torch(self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env))
+        return ReplayBufferSamples(*(obs, acts, next_obs, dones, rews))
 
     @staticmethod
     def _maybe_cast_dtype(dtype: np.typing.DTypeLike | None) -> np.typing.DTypeLike | None:
@@ -472,7 +485,7 @@ class RolloutBuffer(BaseBuffer):
         # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
         action = action.reshape((self.n_envs, self.action_dim))
         if isinstance(self.observation_space, spaces.Graph):
-            self.observations[self.pos] = obs
+            self.observations[self.pos] = copy(obs)
         else:
             self.observations[self.pos] = np.array(obs)
         self.actions[self.pos] = np.array(action)
